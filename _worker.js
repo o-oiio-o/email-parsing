@@ -132,4 +132,5 @@ async function sendToWeComBot(env, from, subject, summary) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ "msgtype": "text", "text": { "content": textContent } })
   });
+
 }
