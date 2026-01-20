@@ -6,7 +6,7 @@
     "binding": "AI"
   },
   "vars": {
-    "AI_MODEL": "@cf/qwen/qwen1.5-7b-chat-awq", // 非敏感，可直接写
+    "AI_MODEL": "@hf/mistral/mistral-7b-instruct-v0.2", // 非敏感，可直接写
     "FORWARD_TO": "",          // 留空，在控制台填写
     "WECOM_WEBHOOK_URL": "",   // 留空，在控制台填写
     "TG_BOT_TOKEN": "",        // 留空，在控制台填写
