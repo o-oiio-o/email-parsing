@@ -9,7 +9,7 @@ export default {
     const AI_MODEL = env.AI_MODEL || '@cf/mistral/mistral-7b-instruct-v0.2';
 
     if (!FORWARD_TO) {
-      console.error("❌ 错误: 未设置 FORWARD_TO 环境变量。");
+      console.error("❌ 错误: 未设置 FORWARD_TO 环境变量，无法转发邮件。");
     }
 
     // =========================================================
@@ -68,20 +68,22 @@ export default {
     // =========================================================
     // 4. 多平台推送 & 转发
     // =========================================================
-    // 构造统一的消息文本
+    
+    // 匹配图标
     const icon = getSmartIcon(summary);
     const pushText = `${icon} 新邮件到达\n--------------------\n发件人: ${from}\n主　题: ${subject}\n--------------------\n${summary}`;
 
-    // 异步推送企业微信
+    // 企业微信推送
     if (env.WECOM_WEBHOOK_URL) {
       ctx.waitUntil(sendToWeComBot(env.WECOM_WEBHOOK_URL, pushText));
     }
 
-    // 异步推送 Telegram (新增)
+    // Telegram 推送
     if (env.TG_BOT_TOKEN && env.TG_CHAT_ID) {
       ctx.waitUntil(sendToTelegramBot(env.TG_BOT_TOKEN, env.TG_CHAT_ID, pushText));
     }
     
+    // 邮件转发
     if (FORWARD_TO) {
       await message.forward(FORWARD_TO);
     }
@@ -89,7 +91,7 @@ export default {
 };
 
 // =========================================================
-// 辅助函数：智能图标识别 (抽离原逻辑)
+// 辅助函数：智能图标识别
 // =========================================================
 function getSmartIcon(summary) {
   const iconMap = [
@@ -112,25 +114,32 @@ async function sendToWeComBot(webhookUrl, content) {
     await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ "msgtype": "text", "text": { "content": content } })
+      body: JSON.stringify({
+        "msgtype": "text",
+        "text": { "content": content }
+      })
     });
   } catch (err) { console.error("WeCom推送失败:", err); }
 }
 
 // =========================================================
-// 辅助函数：Telegram 推送 (新增)
+// 辅助函数：Telegram 推送
 // =========================================================
 async function sendToTelegramBot(token, chatId, content) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   try {
-    await fetch(url, {
+    const resp = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: content,
-        parse_mode: "HTML" // 支持基础 HTML 标签
+        text: content
+        // 移除 parse_mode: "HTML" 以避免特殊字符导致发送失败
       })
     });
-  } catch (err) { console.error("TG推送失败:", err); }
+    if (!resp.ok) {
+      const errDetail = await resp.json();
+      console.error("TG推送返回错误:", errDetail);
+    }
+  } catch (err) { console.error("TG网络请求失败:", err); }
 }
