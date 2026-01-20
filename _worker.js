@@ -3,25 +3,23 @@ import PostalMime from 'postal-mime';
 export default {
   async email(message, env, ctx) {
     // =========================================================
-    // 1. 配置读取 (优先从环境变量获取，否则使用默认值)
+    // 1. 配置读取
     // =========================================================
     const FORWARD_TO = env.FORWARD_TO; 
-    // 默认模型，如果没有在环境变量设置 AI_MODEL，则使用原来的 mistral
     const AI_MODEL = env.AI_MODEL || '@cf/mistral/mistral-7b-instruct-v0.2';
 
     if (!FORWARD_TO) {
-      console.error("❌ 错误: 未设置 FORWARD_TO 环境变量，无法转发邮件。");
+      console.error("❌ 错误: 未设置 FORWARD_TO 环境变量。");
     }
 
     // =========================================================
-    // 2. 邮件解析 (使用 postal-mime 完美处理各种格式)
+    // 2. 邮件解析
     // =========================================================
     let subject = "无主题";
     let from = "未知发件人";
     let cleanBody = "";
 
     try {
-      // 获取原始数据的 ArrayBuffer
       const rawEmail = await new Response(message.raw).arrayBuffer();
       const parser = new PostalMime();
       const parsedEmail = await parser.parse(rawEmail);
@@ -29,15 +27,13 @@ export default {
       subject = parsedEmail.subject || "无主题";
       from = parsedEmail.from ? `${parsedEmail.from.name} <${parsedEmail.from.address}>` : message.from;
 
-      // 智能提取内容：优先用纯文本，如果没有则用 HTML (AI 能读懂 HTML 标签，不用完全清洗)
       if (parsedEmail.text) {
         cleanBody = parsedEmail.text;
       } else if (parsedEmail.html) {
-        cleanBody = parsedEmail.html; // AI 可以处理 HTML，不需要硬正则去清洗
+        cleanBody = parsedEmail.html;
       } else {
         cleanBody = "邮件内容无法识别或为空。";
       }
-
     } catch (e) {
       console.error("解析邮件失败:", e);
       cleanBody = "解析邮件正文失败，无法生成摘要。";
@@ -48,9 +44,7 @@ export default {
     // =========================================================
     let summary = "";
     try {
-      // 限制输入长度，防止 token 溢出 (截取前 4000 字符)
       const inputContent = cleanBody.substring(0, 4000);
-
       const aiResponse = await env.AI.run(AI_MODEL, {
         messages: [
           {
@@ -72,11 +66,22 @@ export default {
     }
 
     // =========================================================
-    // 4. 推送 & 转发
+    // 4. 多平台推送 & 转发
     // =========================================================
-    ctx.waitUntil(sendToWeComBot(env, from, subject, summary));
+    // 构造统一的消息文本
+    const icon = getSmartIcon(summary);
+    const pushText = `${icon} 新邮件到达\n--------------------\n发件人: ${from}\n主　题: ${subject}\n--------------------\n${summary}`;
+
+    // 异步推送企业微信
+    if (env.WECOM_WEBHOOK_URL) {
+      ctx.waitUntil(sendToWeComBot(env.WECOM_WEBHOOK_URL, pushText));
+    }
+
+    // 异步推送 Telegram (新增)
+    if (env.TG_BOT_TOKEN && env.TG_CHAT_ID) {
+      ctx.waitUntil(sendToTelegramBot(env.TG_BOT_TOKEN, env.TG_CHAT_ID, pushText));
+    }
     
-    // 只有配置了转发地址才执行转发
     if (FORWARD_TO) {
       await message.forward(FORWARD_TO);
     }
@@ -84,44 +89,48 @@ export default {
 };
 
 // =========================================================
-// 辅助函数：企业微信推送 (保持原样，未修改)
+// 辅助函数：智能图标识别 (抽离原逻辑)
 // =========================================================
-async function sendToWeComBot(env, from, subject, summary) {
-  const webhookUrl = env.WECOM_WEBHOOK_URL;
-  if (!webhookUrl) return;
-
-  // 优化：基于关键词智能匹配图标
+function getSmartIcon(summary) {
   const iconMap = [
     { icon: "🚨", keywords: ["报警", "紧急", "错误", "失败", "Alert", "Error"] },
     { icon: "💰", keywords: ["金额", "账单", "支付", "Payment", "Bill"] },
     { icon: "🔐", keywords: ["验证码", "OTP", "Code", "登录", "verify"] },
     { icon: "📦", keywords: ["快递", "发货", "Delivery"] }
   ];
-
-  let icon = "📧"; // 默认图标
   for (const item of iconMap) {
-    if (item.keywords.some(k => summary.includes(k))) {
-      icon = item.icon;
-      break;
-    }
+    if (item.keywords.some(k => summary.includes(k))) return item.icon;
   }
+  return "📧";
+}
 
-  const textContent = `${icon} 新邮件到达
---------------------
-发件人: ${from}
-主　题: ${subject}
---------------------
-${summary}
-`;
-
+// =========================================================
+// 辅助函数：企业微信推送
+// =========================================================
+async function sendToWeComBot(webhookUrl, content) {
   try {
     await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ "msgtype": "text", "text": { "content": content } })
+    });
+  } catch (err) { console.error("WeCom推送失败:", err); }
+}
+
+// =========================================================
+// 辅助函数：Telegram 推送 (新增)
+// =========================================================
+async function sendToTelegramBot(token, chatId, content) {
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        "msgtype": "text",
-        "text": { "content": textContent }
+        chat_id: chatId,
+        text: content,
+        parse_mode: "HTML" // 支持基础 HTML 标签
       })
     });
-  } catch (err) { console.error(err); }
+  } catch (err) { console.error("TG推送失败:", err); }
 }
