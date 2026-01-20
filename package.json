@@ -1,0 +1,24 @@
+{
+  "name": "email-parsing",
+  "version": "1.0.0",
+  "description": "",
+  "main": "_worker.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/o-oiio-o/email-parsing.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/o-oiio-o/email-parsing/issues"
+  },
+  "homepage": "https://github.com/o-oiio-o/email-parsing#readme",
+  "dependencies": {
+    "postal-mime": "^2.7.3"
+  }
+}
