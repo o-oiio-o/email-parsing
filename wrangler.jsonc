@@ -1,5 +1,5 @@
 {
-  "name": "email-parsing", // 你的 Worker 名称
+  "name": "email-parsing-mime", // 你的 Worker 名称
   "main": "_worker.js",     // 关键：告诉 CF 入口文件是这个
   "compatibility_date": "2026-01-20",
   "ai": {
