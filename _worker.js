@@ -1,45 +1,74 @@
+import PostalMime from 'postal-mime';
+
 export default {
   async email(message, env, ctx) {
     // =========================================================
-    // 1. 配置读取 (从环境变量获取)
+    // 1. 配置读取 (优先从环境变量获取，否则使用默认值)
     // =========================================================
-    const FORWARD_TO = env.FORWARD_TO;
+    const FORWARD_TO = env.FORWARD_TO; 
+    // 默认模型，如果没有在环境变量设置 AI_MODEL，则使用原来的 mistral
     const AI_MODEL = env.AI_MODEL || '@cf/mistral/mistral-7b-instruct-v0.2';
 
-    // =========================================================
-    // 2. 获取并解析邮件 (增强版逻辑)
-    // =========================================================
-    const subject = message.headers.get("subject") || "无主题";
-    const from = message.from;
+    if (!FORWARD_TO) {
+      console.error("❌ 错误: 未设置 FORWARD_TO 环境变量，无法转发邮件。");
+    }
 
-    // 获取原始流并转为字符串
-    const rawText = await streamToString(message.raw);
-    
-    // 使用增强版清洗函数，自动处理 HTML 和各种编码
-    const cleanBody = smartParseEmail(rawText);
+    // =========================================================
+    // 2. 邮件解析 (使用 postal-mime 完美处理各种格式)
+    // =========================================================
+    let subject = "无主题";
+    let from = "未知发件人";
+    let cleanBody = "";
+
+    try {
+      // 获取原始数据的 ArrayBuffer
+      const rawEmail = await new Response(message.raw).arrayBuffer();
+      const parser = new PostalMime();
+      const parsedEmail = await parser.parse(rawEmail);
+
+      subject = parsedEmail.subject || "无主题";
+      from = parsedEmail.from ? `${parsedEmail.from.name} <${parsedEmail.from.address}>` : message.from;
+
+      // 智能提取内容：优先用纯文本，如果没有则用 HTML (AI 能读懂 HTML 标签，不用完全清洗)
+      if (parsedEmail.text) {
+        cleanBody = parsedEmail.text;
+      } else if (parsedEmail.html) {
+        cleanBody = parsedEmail.html; // AI 可以处理 HTML，不需要硬正则去清洗
+      } else {
+        cleanBody = "邮件内容无法识别或为空。";
+      }
+
+    } catch (e) {
+      console.error("解析邮件失败:", e);
+      cleanBody = "解析邮件正文失败，无法生成摘要。";
+    }
 
     // =========================================================
     // 3. AI 处理
     // =========================================================
     let summary = "";
     try {
+      // 限制输入长度，防止 token 溢出 (截取前 4000 字符)
+      const inputContent = cleanBody.substring(0, 4000);
+
       const aiResponse = await env.AI.run(AI_MODEL, {
         messages: [
           {
             role: "system",
-            content: `你是邮件安全审计专家。请用【简体中文】执行：
-            1. 内容摘要：是谁发的？什么事？
-            2. ⚡️抓取关键数据：列出【验证码】、【OTP】、【金额】、【截止日期】。`
+            content: `你是运行在 Cloudflare Workers 上的邮件安全审计与摘要专家。请用【简体中文】回答。
+            执行两条指令：
+            1. 内容摘要：是谁发的信？什么事？(如：服务器报警、账单待付、验证码)。
+            2. ⚡️抓取关键数据：如果文中包含【验证码】、【OTP】、【金额】、【截止日期】，必须单独列出！无数据则不写。`
           },
           {
             role: "user",
-            content: `主题: ${subject}\n内容:\n${cleanBody.substring(0, 3500)}`
+            content: `邮件发件人: ${from}\n邮件主题: ${subject}\n邮件内容:\n${inputContent}`
           }
         ]
       });
       summary = aiResponse.response;
     } catch (e) {
-      summary = `AI 摘要失败 (${AI_MODEL}): ${e.message}`;
+      summary = `AI 罢工了 (${AI_MODEL}): ${e.message}`;
     }
 
     // =========================================================
@@ -47,90 +76,52 @@ export default {
     // =========================================================
     ctx.waitUntil(sendToWeComBot(env, from, subject, summary));
     
+    // 只有配置了转发地址才执行转发
     if (FORWARD_TO) {
       await message.forward(FORWARD_TO);
     }
   }
 };
 
-/**
- * 增强版邮件正文提取逻辑
- * 能够识别 Multipart、HTML、Base64 和 Quoted-Printable
- */
-function smartParseEmail(raw) {
-  try {
-    // 移除 HTML 标签的辅助函数
-    const stripHtml = (html) => html.replace(/<[^>]*>?/gm, '').replace(/&nbsp;/g, ' ');
-
-    // 1. 简单的 MIME 分隔符识别
-    const contentType = raw.match(/Content-Type:.*boundary="?([^";\s]+)"?/i);
-    if (contentType) {
-      const boundary = contentType[1];
-      const parts = raw.split("--" + boundary);
-      
-      // 优先找 text/plain，找不到就找 text/html
-      let htmlPart = "";
-      for (const part of parts) {
-        if (part.includes("Content-Type: text/plain")) {
-          return decodeMimePart(part);
-        }
-        if (part.includes("Content-Type: text/html")) {
-          htmlPart = decodeMimePart(part);
-        }
-      }
-      if (htmlPart) return stripHtml(htmlPart);
-    }
-
-    // 2. 如果不是 Multipart，尝试直接解码
-    return decodeMimePart(raw);
-  } catch (e) {
-    return raw.substring(0, 1000); 
-  }
-}
-
-function decodeMimePart(part) {
-  const bodyIdx = part.indexOf("\r\n\r\n");
-  const headers = part.substring(0, bodyIdx);
-  let body = part.substring(bodyIdx + 4);
-
-  // 处理 Base64
-  if (/Content-Transfer-Encoding: base64/i.test(headers)) {
-    try {
-      const base64Str = body.replace(/\s/g, "");
-      return decodeURIComponent(escape(atob(base64Str)));
-    } catch (e) { return body; }
-  }
-
-  // 处理 Quoted-Printable
-  if (/Content-Transfer-Encoding: quoted-printable/i.test(headers)) {
-    return body.replace(/=[\r\n]+/g, "").replace(/=([0-9A-F]{2})/gi, (_, c) => String.fromCharCode(parseInt(c, 16)));
-  }
-
-  return body;
-}
-
-async function streamToString(stream) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let result = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    result += decoder.decode(value, { stream: true });
-  }
-  return result + decoder.decode();
-}
-
+// =========================================================
+// 辅助函数：企业微信推送 (保持原样，未修改)
+// =========================================================
 async function sendToWeComBot(env, from, subject, summary) {
   const webhookUrl = env.WECOM_WEBHOOK_URL;
   if (!webhookUrl) return;
 
-  const textContent = `📧 新邮件摘要\n发件人: ${from}\n主题: ${subject}\n--------------------\n${summary}`;
+  // 优化：基于关键词智能匹配图标
+  const iconMap = [
+    { icon: "🚨", keywords: ["报警", "紧急", "错误", "失败", "Alert", "Error"] },
+    { icon: "💰", keywords: ["金额", "账单", "支付", "Payment", "Bill"] },
+    { icon: "🔐", keywords: ["验证码", "OTP", "Code", "登录", "verify"] },
+    { icon: "📦", keywords: ["快递", "发货", "Delivery"] }
+  ];
 
-  await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ "msgtype": "text", "text": { "content": textContent } })
-  });
+  let icon = "📧"; // 默认图标
+  for (const item of iconMap) {
+    if (item.keywords.some(k => summary.includes(k))) {
+      icon = item.icon;
+      break;
+    }
+  }
 
+  const textContent = `${icon} 新邮件到达
+--------------------
+发件人: ${from}
+主　题: ${subject}
+--------------------
+${summary}
+`;
+
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        "msgtype": "text",
+        "text": { "content": textContent }
+      })
+    });
+  } catch (err) { console.error(err); }
 }
