@@ -1,0 +1,11 @@
+{
+  "name": "email-parsing", // 你的 Worker 名称
+  "main": "_worker.js",     // 关键：告诉 CF 入口文件是这个
+  "compatibility_date": "2026-01-20",
+  "ai": {
+    "binding": "AI"        // 确保你的代码可以调用 env.AI
+  },
+  "observability": {
+    "enabled": true
+  }
+}
