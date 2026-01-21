@@ -7,6 +7,7 @@ export default {
     // =========================================================
     const FORWARD_TO = env.FORWARD_TO; 
     const AI_MODEL = env.AI_MODEL || '@cf/mistral/mistral-7b-instruct-v0.2';
+    const GEMINI_API_KEY = env.GEMINI_API_KEY; // 新增 Gemini API Key
 
     if (!FORWARD_TO) {
       console.error("❌ 错误: 未设置 FORWARD_TO 环境变量，无法转发邮件。");
@@ -40,29 +41,57 @@ export default {
     }
 
     // =========================================================
-    // 3. AI 处理
+    // 3. AI 处理 (优先 Gemini 2.5 Flash)
     // =========================================================
     let summary = "";
-    try {
-      const inputContent = cleanBody.substring(0, 4000);
-      const aiResponse = await env.AI.run(AI_MODEL, {
-        messages: [
-          {
-            role: "system",
-            content: `你是运行在 Cloudflare Workers 上的邮件安全审计与摘要专家。请用【简体中文】回答。
+    const inputContent = cleanBody.substring(0, 4000);
+    const systemPrompt = `你是运行在 Cloudflare Workers 上的邮件安全审计与摘要专家。请用【简体中文】回答。
             执行两条指令：
             1. 内容摘要：是谁发的信？什么事？(如：服务器报警、账单待付、验证码)。
-            2. ⚡️抓取关键数据：如果文中包含【验证码】、【OTP】、【金额】、【截止日期】，必须单独列出！无数据则不写。`
-          },
-          {
-            role: "user",
-            content: `邮件发件人: ${from}\n邮件主题: ${subject}\n邮件内容:\n${inputContent}`
-          }
-        ]
-      });
-      summary = aiResponse.response;
-    } catch (e) {
-      summary = `AI 罢工了 (${AI_MODEL}): ${e.message}`;
+            2. ⚡️抓取关键数据：如果文中包含【验证码】、【OTP】、【金额】、【截止日期】，必须单独列出！无数据则不写。`;
+    const userPrompt = `邮件发件人: ${from}\n邮件主题: ${subject}\n邮件内容:\n${inputContent}`;
+
+    try {
+      if (GEMINI_API_KEY) {
+        // --- 优先尝试使用 Gemini 2.5 Flash ---
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+        const geminiResp = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              role: "user",
+              parts: [{ text: `${systemPrompt}\n\n待处理邮件如下：\n${userPrompt}` }]
+            }]
+          })
+        });
+
+        const geminiData = await geminiResp.json();
+        if (geminiData.candidates && geminiData.candidates[0]?.content?.parts[0]?.text) {
+          summary = geminiData.candidates[0].content.parts[0].text;
+          console.log("✅ 使用 Gemini 2.5 Flash 生成摘要");
+        } else {
+          throw new Error("Gemini 返回数据异常，尝试回退到 Workers AI");
+        }
+      } else {
+        // 未配置 Key，直接进入 Workers AI
+        throw new Error("未配置 GEMINI_API_KEY");
+      }
+    } catch (geminiError) {
+      // --- Fallback: 回退到原有的 Workers AI 逻辑 ---
+      console.warn(`⚠️ 无法使用 Gemini (${geminiError.message})，正在尝试 Workers AI...`);
+      try {
+        const aiResponse = await env.AI.run(AI_MODEL, {
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ]
+        });
+        summary = aiResponse.response;
+        console.log("✅ 使用 Workers AI 生成摘要");
+      } catch (aiError) {
+        summary = `所有 AI 均不可用。Gemini 错误: ${geminiError.message}; Workers AI 错误: ${aiError.message}`;
+      }
     }
 
     // =========================================================
@@ -134,7 +163,6 @@ async function sendToTelegramBot(token, chatId, content) {
       body: JSON.stringify({
         chat_id: chatId,
         text: content
-        // 移除 parse_mode: "HTML" 以避免特殊字符导致发送失败
       })
     });
     if (!resp.ok) {
