@@ -45,10 +45,10 @@ export default {
     // =========================================================
     let summary = "";
     const inputContent = cleanBody.substring(0, 4000);
-    const systemPrompt = `你是运行在 Cloudflare Workers 上的邮件安全审计与摘要专家。请用【简体中文】回答。
-            执行两条指令：
-            1. 内容摘要：是谁发的信？什么事？(如：服务器报警、账单待付、验证码)。
-            2. ⚡️抓取关键数据：如果文中包含【验证码】、【OTP】、【金额】、【截止日期】，必须单独列出！无数据则不写。`;
+    const systemPrompt = `你是邮件审计专家。请直接输出结果，严禁重复指令中的问题，严禁使用任何 Markdown 格式（如星号 *、加粗 ** 等）。
+            请按以下格式回答：
+            1. 内容摘要：[在此处直接写一段话总结谁发的、什么事，不要分项，不要带星号]
+            2. ⚡️抓取关键数据：[在此处直接列出验证码、金额、日期等，若没有则写“无关键数据”]`;
     const userPrompt = `邮件发件人: ${from}\n邮件主题: ${subject}\n邮件内容:\n${inputContent}`;
 
     try {
@@ -171,3 +171,4 @@ async function sendToTelegramBot(token, chatId, content) {
     }
   } catch (err) { console.error("TG网络请求失败:", err); }
 }
+
